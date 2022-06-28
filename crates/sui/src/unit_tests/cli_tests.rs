@@ -6,19 +6,19 @@ use std::{fmt::Write, fs::read_dir, path::PathBuf, str, time::Duration};
 use anyhow::anyhow;
 use serde_json::{json, Value};
 
-use sui::wallet_commands::SwitchResponse;
+use sui::client_commands::SwitchResponse;
 use sui::{
+    client_commands::{SuiClientCommands, WalletCommandResult, WalletContext},
     config::{GatewayConfig, GatewayType, WalletConfig},
-    keystore::KeystoreType,
     sui_commands::SuiCommand,
-    wallet_commands::{WalletCommandResult, WalletCommands, WalletContext},
 };
 use sui_config::genesis_config::{AccountConfig, GenesisConfig, ObjectConfig};
 use sui_config::{
-    Config, NetworkConfig, PersistedConfig, SUI_FULLNODE_CONFIG, SUI_GATEWAY_CONFIG,
-    SUI_GENESIS_FILENAME, SUI_NETWORK_CONFIG, SUI_WALLET_CONFIG,
+    Config, NetworkConfig, PersistedConfig, SUI_CLIENT_CONFIG, SUI_FULLNODE_CONFIG,
+    SUI_GATEWAY_CONFIG, SUI_GENESIS_FILENAME, SUI_KEYSTORE_FILENAME, SUI_NETWORK_CONFIG,
 };
 use sui_json::SuiJsonValue;
+use sui_json_rpc_api::keystore::KeystoreType;
 use sui_json_rpc_api::rpc_types::{GetObjectDataResponse, SuiParsedObject, SuiTransactionEffects};
 use sui_types::{
     base_types::{ObjectID, SuiAddress},
@@ -59,13 +59,13 @@ async fn test_genesis() -> Result<(), anyhow::Error> {
         .collect::<Vec<_>>();
 
     assert_eq!(10, files.len());
-    assert!(files.contains(&SUI_WALLET_CONFIG.to_string()));
+    assert!(files.contains(&SUI_CLIENT_CONFIG.to_string()));
     assert!(files.contains(&SUI_GATEWAY_CONFIG.to_string()));
     assert!(files.contains(&SUI_NETWORK_CONFIG.to_string()));
     assert!(files.contains(&SUI_FULLNODE_CONFIG.to_string()));
     assert!(files.contains(&SUI_GENESIS_FILENAME.to_string()));
 
-    assert!(files.contains(&"wallet.key".to_string()));
+    assert!(files.contains(&SUI_KEYSTORE_FILENAME.to_string()));
 
     // Check network config
     let network_conf =
@@ -73,7 +73,7 @@ async fn test_genesis() -> Result<(), anyhow::Error> {
     assert_eq!(4, network_conf.validator_configs().len());
 
     // Check wallet config
-    let wallet_conf = PersistedConfig::<WalletConfig>::read(&working_dir.join(SUI_WALLET_CONFIG))?;
+    let wallet_conf = PersistedConfig::<WalletConfig>::read(&working_dir.join(SUI_CLIENT_CONFIG))?;
 
     if let GatewayType::Embedded(config) = &wallet_conf.gateway {
         assert_eq!(4, config.validator_set.len());
@@ -106,14 +106,14 @@ async fn test_addresses_command() -> Result<(), anyhow::Error> {
 
     let wallet_config = WalletConfig {
         accounts: vec![],
-        keystore: KeystoreType::File(working_dir.join("wallet.key")),
+        keystore: KeystoreType::File(working_dir.join(SUI_KEYSTORE_FILENAME)),
         gateway: GatewayType::Embedded(GatewayConfig {
             db_folder_path: working_dir.join("client_db"),
             ..Default::default()
         }),
         active_address: None,
     };
-    let wallet_conf_path = working_dir.join(SUI_WALLET_CONFIG);
+    let wallet_conf_path = working_dir.join(SUI_CLIENT_CONFIG);
     let mut wallet_config = wallet_config.persisted(&wallet_conf_path);
 
     // Add 3 accounts
@@ -128,7 +128,7 @@ async fn test_addresses_command() -> Result<(), anyhow::Error> {
     let mut context = WalletContext::new(&wallet_conf_path)?;
 
     // Print all addresses
-    WalletCommands::Addresses
+    SuiClientCommands::Addresses
         .execute(&mut context)
         .await?
         .print(true);
@@ -141,7 +141,7 @@ async fn test_objects_command() -> Result<(), anyhow::Error> {
     let (_network, mut context, address) = setup_network_and_wallet().await?;
 
     // Print objects owned by `address`
-    WalletCommands::Objects {
+    SuiClientCommands::Objects {
         address: Some(address),
     }
     .execute(&mut context)
@@ -160,7 +160,7 @@ async fn test_objects_command() -> Result<(), anyhow::Error> {
 async fn test_create_example_nft_command() -> Result<(), anyhow::Error> {
     let (_network, mut context, address) = setup_network_and_wallet().await?;
 
-    let result = WalletCommands::CreateExampleNFT {
+    let result = SuiClientCommands::CreateExampleNFT {
         name: None,
         description: None,
         url: None,
@@ -204,12 +204,12 @@ async fn test_custom_genesis() -> Result<(), anyhow::Error> {
     let network = start_test_network(Some(config)).await?;
 
     // Wallet config
-    let mut context = WalletContext::new(&network.dir().join(SUI_WALLET_CONFIG))?;
+    let mut context = WalletContext::new(&network.dir().join(SUI_CLIENT_CONFIG))?;
     assert_eq!(1, context.config.accounts.len());
     let address = context.config.accounts.first().cloned().unwrap();
 
     // Sync client to retrieve objects from the network.
-    WalletCommands::SyncClientState {
+    SuiClientCommands::SyncClientState {
         address: Some(address),
     }
     .execute(&mut context)
@@ -217,7 +217,7 @@ async fn test_custom_genesis() -> Result<(), anyhow::Error> {
     .print(true);
 
     // Print objects owned by `address`
-    WalletCommands::Objects {
+    SuiClientCommands::Objects {
         address: Some(address),
     }
     .execute(&mut context)
@@ -248,7 +248,7 @@ async fn test_custom_genesis_with_custom_move_package() -> Result<(), anyhow::Er
         PersistedConfig::<NetworkConfig>::read(&network.dir().join(SUI_NETWORK_CONFIG))?;
 
     // Create Wallet context.
-    let wallet_conf_path = network.dir().join(SUI_WALLET_CONFIG);
+    let wallet_conf_path = network.dir().join(SUI_CLIENT_CONFIG);
     let mut context = WalletContext::new(&wallet_conf_path)?;
 
     // Make sure init() is executed correctly for custom_genesis_package_2::M1
@@ -270,7 +270,7 @@ async fn test_object_info_get_command() -> Result<(), anyhow::Error> {
     // Check log output contains all object ids.
     let object_id = object_refs.first().unwrap().object_id;
 
-    WalletCommands::Object { id: object_id }
+    SuiClientCommands::Object { id: object_id }
         .execute(&mut context)
         .await?
         .print(true);
@@ -291,7 +291,7 @@ async fn test_gas_command() -> Result<(), anyhow::Error> {
     let object_id = object_refs.first().unwrap().object_id;
     let object_to_send = object_refs.get(1).unwrap().object_id;
 
-    WalletCommands::Gas {
+    SuiClientCommands::Gas {
         address: Some(address),
     }
     .execute(&mut context)
@@ -301,7 +301,7 @@ async fn test_gas_command() -> Result<(), anyhow::Error> {
     tokio::time::sleep(Duration::from_millis(100)).await;
 
     // Send an object
-    WalletCommands::Transfer {
+    SuiClientCommands::Transfer {
         to: recipient,
         coin_object_id: object_to_send,
         gas: Some(object_id),
@@ -311,7 +311,7 @@ async fn test_gas_command() -> Result<(), anyhow::Error> {
     .await?;
 
     // Fetch gas again
-    WalletCommands::Gas {
+    SuiClientCommands::Gas {
         address: Some(address),
     }
     .execute(&mut context)
@@ -338,7 +338,7 @@ async fn get_move_objects(
     address: SuiAddress,
 ) -> Result<Vec<(ObjectID, Value)>, anyhow::Error> {
     // Sync client to retrieve objects from the network.
-    WalletCommands::SyncClientState {
+    SuiClientCommands::SyncClientState {
         address: Some(address),
     }
     .execute(context)
@@ -346,7 +346,7 @@ async fn get_move_objects(
     .print(true);
 
     // Fetch objects owned by `address`
-    let objects_result = WalletCommands::Objects {
+    let objects_result = SuiClientCommands::Objects {
         address: Some(address),
     }
     .execute(context)
@@ -374,7 +374,7 @@ async fn get_move_object(
     context: &mut WalletContext,
     id: ObjectID,
 ) -> Result<Value, anyhow::Error> {
-    let obj = WalletCommands::Object { id }.execute(context).await?;
+    let obj = SuiClientCommands::Object { id }.execute(context).await?;
 
     match obj {
         WalletCommandResult::Object(obj) => match obj {
@@ -392,7 +392,7 @@ async fn test_move_call_args_linter_command() -> Result<(), anyhow::Error> {
     let address2 = context.config.accounts.get(1).cloned().unwrap();
 
     // Sync client to retrieve objects from the network.
-    WalletCommands::SyncClientState {
+    SuiClientCommands::SyncClientState {
         address: Some(address2),
     }
     .execute(&mut context)
@@ -400,7 +400,7 @@ async fn test_move_call_args_linter_command() -> Result<(), anyhow::Error> {
     .print(true);
 
     // Print objects owned by `address1`
-    WalletCommands::Objects {
+    SuiClientCommands::Objects {
         address: Some(address1),
     }
     .execute(&mut context)
@@ -430,7 +430,7 @@ async fn test_move_call_args_linter_command() -> Result<(), anyhow::Error> {
     }
 
     // Test case with no gas specified
-    let resp = WalletCommands::Call {
+    let resp = SuiClientCommands::Call {
         package: ObjectID::from_hex_literal("0x2").unwrap(),
         module: "object_basics".to_string(),
         function: "create".to_string(),
@@ -470,7 +470,7 @@ async fn test_move_call_args_linter_command() -> Result<(), anyhow::Error> {
         args.push(SuiJsonValue::new(a.clone()).unwrap());
     }
 
-    let resp = WalletCommands::Call {
+    let resp = SuiClientCommands::Call {
         package: ObjectID::from_hex_literal("0x2").unwrap(),
         module: "object_basics".to_string(),
         function: "create".to_string(),
@@ -498,7 +498,7 @@ async fn test_move_call_args_linter_command() -> Result<(), anyhow::Error> {
         args.push(SuiJsonValue::new(a.clone()).unwrap());
     }
 
-    let resp = WalletCommands::Call {
+    let resp = SuiClientCommands::Call {
         package: ObjectID::from_hex_literal("0x2").unwrap(),
         module: "object_basics".to_string(),
         function: "transfer".to_string(),
@@ -525,7 +525,7 @@ async fn test_move_call_args_linter_command() -> Result<(), anyhow::Error> {
         args.push(SuiJsonValue::new(a.clone()).unwrap());
     }
 
-    WalletCommands::Call {
+    SuiClientCommands::Call {
         package: ObjectID::from_hex_literal("0x2").unwrap(),
         module: "object_basics".to_string(),
         function: "transfer".to_string(),
@@ -557,7 +557,7 @@ async fn test_package_publish_command() -> Result<(), anyhow::Error> {
     let mut path = TEST_DATA_DIR.to_owned();
     path.push_str("dummy_modules_publish");
 
-    let resp = WalletCommands::Publish {
+    let resp = SuiClientCommands::Publish {
         path,
         gas: Some(gas_obj_id),
         gas_budget: 1000,
@@ -578,7 +578,7 @@ async fn test_package_publish_command() -> Result<(), anyhow::Error> {
     };
 
     // Check the objects
-    let resp = WalletCommands::Object {
+    let resp = SuiClientCommands::Object {
         id: package.object_id,
     }
     .execute(&mut context)
@@ -588,7 +588,7 @@ async fn test_package_publish_command() -> Result<(), anyhow::Error> {
         WalletCommandResult::Object(GetObjectDataResponse::Exists(..))
     ));
 
-    let resp = WalletCommands::Object {
+    let resp = SuiClientCommands::Object {
         id: created_obj.object_id,
     }
     .execute(&mut context)
@@ -616,7 +616,7 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
     let gas_obj_id = object_refs.first().unwrap().object_id;
     let obj_id = object_refs.get(1).unwrap().object_id;
 
-    let resp = WalletCommands::Transfer {
+    let resp = SuiClientCommands::Transfer {
         gas: Some(gas_obj_id),
         to: recipient,
         coin_object_id: obj_id,
@@ -641,13 +641,13 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
         };
 
     // Sync both to fetch objects
-    WalletCommands::SyncClientState {
+    SuiClientCommands::SyncClientState {
         address: Some(address),
     }
     .execute(&mut context)
     .await?
     .print(true);
-    WalletCommands::SyncClientState {
+    SuiClientCommands::SyncClientState {
         address: Some(recipient),
     }
     .execute(&mut context)
@@ -655,7 +655,7 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
     .print(true);
 
     // Check the objects
-    let resp = WalletCommands::Object { id: mut_obj1 }
+    let resp = SuiClientCommands::Object { id: mut_obj1 }
         .execute(&mut context)
         .await?;
     let mut_obj1 = if let WalletCommandResult::Object(GetObjectDataResponse::Exists(object)) = resp
@@ -667,7 +667,7 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
         panic!()
     };
 
-    let resp = WalletCommands::Object { id: mut_obj2 }
+    let resp = SuiClientCommands::Object { id: mut_obj2 }
         .execute(&mut context)
         .await?;
     let mut_obj2 = if let WalletCommandResult::Object(GetObjectDataResponse::Exists(object)) = resp
@@ -689,7 +689,7 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
     assert_eq!(obj.owner.get_owner_address().unwrap(), recipient);
 
     // Sync client to retrieve objects from the network.
-    WalletCommands::SyncClientState {
+    SuiClientCommands::SyncClientState {
         address: Some(address),
     }
     .execute(&mut context)
@@ -704,7 +704,7 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
     // Check log output contains all object ids.
     let obj_id = object_refs.get(1).unwrap().object_id;
 
-    let resp = WalletCommands::Transfer {
+    let resp = SuiClientCommands::Transfer {
         gas: None,
         to: recipient,
         coin_object_id: obj_id,
@@ -747,7 +747,7 @@ async fn test_switch_command() -> Result<(), anyhow::Error> {
     let network = start_test_network(None).await?;
 
     // Create Wallet context.
-    let wallet_conf = network.dir().join(SUI_WALLET_CONFIG);
+    let wallet_conf = network.dir().join(SUI_CLIENT_CONFIG);
 
     let mut context = WalletContext::new(&wallet_conf)?;
 
@@ -755,14 +755,14 @@ async fn test_switch_command() -> Result<(), anyhow::Error> {
     let addr1 = context.active_address()?;
 
     // Sync client to retrieve objects from the network.
-    WalletCommands::SyncClientState {
+    SuiClientCommands::SyncClientState {
         address: Some(addr1),
     }
     .execute(&mut context)
     .await?;
 
     // Run a command with address omitted
-    let os = WalletCommands::Objects { address: None }
+    let os = SuiClientCommands::Objects { address: None }
         .execute(&mut context)
         .await?;
 
@@ -784,7 +784,7 @@ async fn test_switch_command() -> Result<(), anyhow::Error> {
 
     // Switch the address
     let addr2 = context.config.accounts.get(1).cloned().unwrap();
-    let resp = WalletCommands::Switch {
+    let resp = SuiClientCommands::Switch {
         address: Some(addr2),
         gateway: None,
     }
@@ -808,7 +808,9 @@ async fn test_switch_command() -> Result<(), anyhow::Error> {
     context.config.active_address = None;
 
     // Create a new address
-    let os = WalletCommands::NewAddress {}.execute(&mut context).await?;
+    let os = SuiClientCommands::NewAddress {}
+        .execute(&mut context)
+        .await?;
     let new_addr = if let WalletCommandResult::NewAddress(a) = os {
         a
     } else {
@@ -817,7 +819,7 @@ async fn test_switch_command() -> Result<(), anyhow::Error> {
 
     // Check that we can switch to this address
     // Switch the address
-    let resp = WalletCommands::Switch {
+    let resp = SuiClientCommands::Switch {
         address: Some(new_addr),
         gateway: None,
     }
@@ -843,7 +845,7 @@ async fn test_active_address_command() -> Result<(), anyhow::Error> {
     let network = start_test_network(None).await?;
 
     // Create Wallet context.
-    let wallet_conf = network.dir().join(SUI_WALLET_CONFIG);
+    let wallet_conf = network.dir().join(SUI_CLIENT_CONFIG);
 
     let mut context = WalletContext::new(&wallet_conf)?;
 
@@ -851,14 +853,14 @@ async fn test_active_address_command() -> Result<(), anyhow::Error> {
     let addr1 = context.active_address()?;
 
     // Sync client to retrieve objects from the network.
-    WalletCommands::SyncClientState {
+    SuiClientCommands::SyncClientState {
         address: Some(addr1),
     }
     .execute(&mut context)
     .await?;
 
     // Run a command with address omitted
-    let os = WalletCommands::ActiveAddress {}
+    let os = SuiClientCommands::ActiveAddress {}
         .execute(&mut context)
         .await?;
 
@@ -870,7 +872,7 @@ async fn test_active_address_command() -> Result<(), anyhow::Error> {
     assert_eq!(a, addr1);
 
     let addr2 = context.config.accounts.get(1).cloned().unwrap();
-    let resp = WalletCommands::Switch {
+    let resp = SuiClientCommands::Switch {
         address: Some(addr2),
         gateway: None,
     }
@@ -920,7 +922,7 @@ async fn test_merge_coin() -> Result<(), anyhow::Error> {
         + get_gas_value(&get_object(coin_to_merge, &mut context).await.unwrap());
 
     // Test with gas specified
-    let resp = WalletCommands::MergeCoin {
+    let resp = SuiClientCommands::MergeCoin {
         primary_coin,
         coin_to_merge,
         gas: Some(gas),
@@ -942,7 +944,7 @@ async fn test_merge_coin() -> Result<(), anyhow::Error> {
     assert_eq!(get_object(coin_to_merge, &mut context).await, None);
 
     // Sync client to retrieve objects from the network.
-    WalletCommands::SyncClientState {
+    SuiClientCommands::SyncClientState {
         address: Some(address),
     }
     .execute(&mut context)
@@ -959,7 +961,7 @@ async fn test_merge_coin() -> Result<(), anyhow::Error> {
         + get_gas_value(&get_object(coin_to_merge, &mut context).await.unwrap());
 
     // Test with no gas specified
-    let resp = WalletCommands::MergeCoin {
+    let resp = SuiClientCommands::MergeCoin {
         primary_coin,
         coin_to_merge,
         gas: None,
@@ -999,7 +1001,7 @@ async fn test_split_coin() -> Result<(), anyhow::Error> {
     let orig_value = get_gas_value(&get_object(coin, &mut context).await.unwrap());
 
     // Test with gas specified
-    let resp = WalletCommands::SplitCoin {
+    let resp = SuiClientCommands::SplitCoin {
         gas: Some(gas),
         gas_budget: 1000,
         coin_id: coin,
@@ -1019,7 +1021,7 @@ async fn test_split_coin() -> Result<(), anyhow::Error> {
     assert!((get_gas_value(&g.new_coins[0]) == 1000) || (get_gas_value(&g.new_coins[0]) == 10));
     assert!((get_gas_value(&g.new_coins[1]) == 1000) || (get_gas_value(&g.new_coins[1]) == 10));
 
-    WalletCommands::SyncClientState {
+    SuiClientCommands::SyncClientState {
         address: Some(address),
     }
     .execute(&mut context)
@@ -1040,7 +1042,7 @@ async fn test_split_coin() -> Result<(), anyhow::Error> {
     let orig_value = get_gas_value(&get_object(coin, &mut context).await.unwrap());
 
     // Test with no gas specified
-    let resp = WalletCommands::SplitCoin {
+    let resp = SuiClientCommands::SplitCoin {
         gas: None,
         gas_budget: 1000,
         coin_id: coin,
