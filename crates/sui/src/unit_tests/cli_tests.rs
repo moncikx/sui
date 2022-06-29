@@ -8,7 +8,7 @@ use serde_json::{json, Value};
 
 use sui::client_commands::SwitchResponse;
 use sui::{
-    client_commands::{SuiClientCommands, WalletCommandResult, WalletContext},
+    client_commands::{SuiClientCommandResult, SuiClientCommands, WalletContext},
     config::{GatewayConfig, GatewayType, SuiClientConfig},
     sui_commands::SuiCommand,
 };
@@ -102,6 +102,10 @@ async fn test_genesis() -> Result<(), anyhow::Error> {
 
 #[tokio::test]
 async fn test_addresses_command() -> Result<(), anyhow::Error> {
+    GenesisConfig::for_local_testing()
+        .persisted(&PathBuf::from(".").join("genesis.yaml"))
+        .save()?;
+
     let temp_dir = tempfile::tempdir()?;
     let working_dir = temp_dir.path();
 
@@ -172,7 +176,7 @@ async fn test_create_example_nft_command() -> Result<(), anyhow::Error> {
     .await?;
 
     match result {
-        WalletCommandResult::CreateExampleNFT(GetObjectDataResponse::Exists(obj)) => {
+        SuiClientCommandResult::CreateExampleNFT(GetObjectDataResponse::Exists(obj)) => {
             assert_eq!(obj.owner, address);
             assert_eq!(obj.data.type_().unwrap(), "0x2::devnet_nft::DevNetNFT");
             Ok(obj)
@@ -354,7 +358,7 @@ async fn get_move_objects(
     .await?;
 
     match objects_result {
-        WalletCommandResult::Objects(object_refs) => {
+        SuiClientCommandResult::Objects(object_refs) => {
             let mut objs = vec![];
             for oref in object_refs {
                 objs.push((
@@ -378,7 +382,7 @@ async fn get_move_object(
     let obj = SuiClientCommands::Object { id }.execute(context).await?;
 
     match obj {
-        WalletCommandResult::Object(obj) => match obj {
+        SuiClientCommandResult::Object(obj) => match obj {
             GetObjectDataResponse::Exists(obj) => Ok(serde_json::to_value(obj)?),
             _ => panic!("WalletCommands::Object returns wrong type"),
         },
@@ -445,7 +449,7 @@ async fn test_move_call_args_linter_command() -> Result<(), anyhow::Error> {
     resp.print(true);
 
     // Get the created object
-    let created_obj: ObjectID = if let WalletCommandResult::Call(
+    let created_obj: ObjectID = if let SuiClientCommandResult::Call(
         _,
         SuiTransactionEffects {
             created: new_objs, ..
@@ -569,7 +573,7 @@ async fn test_package_publish_command() -> Result<(), anyhow::Error> {
     // Print it out to CLI/logs
     resp.print(true);
 
-    let (package, created_obj) = if let WalletCommandResult::Publish(response) = resp {
+    let (package, created_obj) = if let SuiClientCommandResult::Publish(response) = resp {
         (
             response.package,
             response.created_objects[0].reference.clone(),
@@ -586,7 +590,7 @@ async fn test_package_publish_command() -> Result<(), anyhow::Error> {
     .await?;
     assert!(matches!(
         resp,
-        WalletCommandResult::Object(GetObjectDataResponse::Exists(..))
+        SuiClientCommandResult::Object(GetObjectDataResponse::Exists(..))
     ));
 
     let resp = SuiClientCommands::Object {
@@ -596,7 +600,7 @@ async fn test_package_publish_command() -> Result<(), anyhow::Error> {
     .await?;
     assert!(matches!(
         resp,
-        WalletCommandResult::Object(GetObjectDataResponse::Exists(..))
+        SuiClientCommandResult::Object(GetObjectDataResponse::Exists(..))
     ));
 
     Ok(())
@@ -631,7 +635,8 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
 
     // Get the mutated objects
     let (mut_obj1, mut_obj2) =
-        if let WalletCommandResult::Transfer(_, _, SuiTransactionEffects { mutated, .. }) = resp {
+        if let SuiClientCommandResult::Transfer(_, _, SuiTransactionEffects { mutated, .. }) = resp
+        {
             (
                 mutated.get(0).unwrap().reference.object_id,
                 mutated.get(1).unwrap().reference.object_id,
@@ -659,26 +664,26 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
     let resp = SuiClientCommands::Object { id: mut_obj1 }
         .execute(&mut context)
         .await?;
-    let mut_obj1 = if let WalletCommandResult::Object(GetObjectDataResponse::Exists(object)) = resp
-    {
-        object
-    } else {
-        // Fail this way because Panic! causes test issues
-        assert!(false);
-        panic!()
-    };
+    let mut_obj1 =
+        if let SuiClientCommandResult::Object(GetObjectDataResponse::Exists(object)) = resp {
+            object
+        } else {
+            // Fail this way because Panic! causes test issues
+            assert!(false);
+            panic!()
+        };
 
     let resp = SuiClientCommands::Object { id: mut_obj2 }
         .execute(&mut context)
         .await?;
-    let mut_obj2 = if let WalletCommandResult::Object(GetObjectDataResponse::Exists(object)) = resp
-    {
-        object
-    } else {
-        // Fail this way because Panic! causes test issues
-        assert!(false);
-        panic!()
-    };
+    let mut_obj2 =
+        if let SuiClientCommandResult::Object(GetObjectDataResponse::Exists(object)) = resp {
+            object
+        } else {
+            // Fail this way because Panic! causes test issues
+            assert!(false);
+            panic!()
+        };
 
     let (gas, obj) = if mut_obj1.owner.get_owner_address().unwrap() == address {
         (mut_obj1, mut_obj2)
@@ -719,7 +724,8 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
 
     // Get the mutated objects
     let (_mut_obj1, _mut_obj2) =
-        if let WalletCommandResult::Transfer(_, _, SuiTransactionEffects { mutated, .. }) = resp {
+        if let SuiClientCommandResult::Transfer(_, _, SuiTransactionEffects { mutated, .. }) = resp
+        {
             (
                 mutated.get(0).unwrap().reference.object_id,
                 mutated.get(1).unwrap().reference.object_id,
@@ -735,7 +741,7 @@ async fn test_native_transfer() -> Result<(), anyhow::Error> {
 #[test]
 // Test for issue https://github.com/MystenLabs/sui/issues/1078
 fn test_bug_1078() {
-    let read = WalletCommandResult::Object(GetObjectDataResponse::NotExists(ObjectID::random()));
+    let read = SuiClientCommandResult::Object(GetObjectDataResponse::NotExists(ObjectID::random()));
     let mut writer = String::new();
     // fmt ObjectRead should not fail.
     write!(writer, "{}", read).unwrap();
@@ -767,7 +773,7 @@ async fn test_switch_command() -> Result<(), anyhow::Error> {
         .execute(&mut context)
         .await?;
 
-    let mut cmd_objs = if let WalletCommandResult::Objects(v) = os {
+    let mut cmd_objs = if let SuiClientCommandResult::Objects(v) = os {
         v
     } else {
         panic!("Command failed")
@@ -797,7 +803,7 @@ async fn test_switch_command() -> Result<(), anyhow::Error> {
         format!("{resp}"),
         format!(
             "{}",
-            WalletCommandResult::Switch(SwitchResponse {
+            SuiClientCommandResult::Switch(SwitchResponse {
                 address: Some(addr2),
                 gateway: None
             })
@@ -812,7 +818,7 @@ async fn test_switch_command() -> Result<(), anyhow::Error> {
     let os = SuiClientCommands::NewAddress {}
         .execute(&mut context)
         .await?;
-    let new_addr = if let WalletCommandResult::NewAddress(a) = os {
+    let new_addr = if let SuiClientCommandResult::NewAddress(a) = os {
         a
     } else {
         panic!("Command failed")
@@ -831,7 +837,7 @@ async fn test_switch_command() -> Result<(), anyhow::Error> {
         format!("{resp}"),
         format!(
             "{}",
-            WalletCommandResult::Switch(SwitchResponse {
+            SuiClientCommandResult::Switch(SwitchResponse {
                 address: Some(new_addr),
                 gateway: None
             })
@@ -865,7 +871,7 @@ async fn test_active_address_command() -> Result<(), anyhow::Error> {
         .execute(&mut context)
         .await?;
 
-    let a = if let WalletCommandResult::ActiveAddress(Some(v)) = os {
+    let a = if let SuiClientCommandResult::ActiveAddress(Some(v)) = os {
         v
     } else {
         panic!("Command failed")
@@ -883,7 +889,7 @@ async fn test_active_address_command() -> Result<(), anyhow::Error> {
         format!("{resp}"),
         format!(
             "{}",
-            WalletCommandResult::Switch(SwitchResponse {
+            SuiClientCommandResult::Switch(SwitchResponse {
                 address: Some(addr2),
                 gateway: None
             })
@@ -932,7 +938,7 @@ async fn test_merge_coin() -> Result<(), anyhow::Error> {
     .execute(&mut context)
     .await?;
 
-    let g = if let WalletCommandResult::MergeCoin(r) = resp {
+    let g = if let SuiClientCommandResult::MergeCoin(r) = resp {
         r
     } else {
         panic!("Command failed")
@@ -971,7 +977,7 @@ async fn test_merge_coin() -> Result<(), anyhow::Error> {
     .execute(&mut context)
     .await?;
 
-    let g = if let WalletCommandResult::MergeCoin(r) = resp {
+    let g = if let SuiClientCommandResult::MergeCoin(r) = resp {
         r
     } else {
         panic!("Command failed")
@@ -1011,7 +1017,7 @@ async fn test_split_coin() -> Result<(), anyhow::Error> {
     .execute(&mut context)
     .await?;
 
-    let g = if let WalletCommandResult::SplitCoin(r) = resp {
+    let g = if let SuiClientCommandResult::SplitCoin(r) = resp {
         r
     } else {
         panic!("Command failed")
@@ -1052,7 +1058,7 @@ async fn test_split_coin() -> Result<(), anyhow::Error> {
     .execute(&mut context)
     .await?;
 
-    let g = if let WalletCommandResult::SplitCoin(r) = resp {
+    let g = if let SuiClientCommandResult::SplitCoin(r) = resp {
         r
     } else {
         panic!("Command failed")
